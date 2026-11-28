@@ -1,5 +1,9 @@
 import { BatchOperation } from '@super-productivity/plugin-api';
-import { MsTodoImportModel, MsTodoTask } from '../parse/normalized-model';
+import {
+  getTasksToImport,
+  MsTodoImportModel,
+  MsTodoTask,
+} from '../parse/normalized-model';
 
 /**
  * Batch chunk size. Must stay ≤ the host's MAX_BATCH_OPERATIONS_SIZE (50):
@@ -16,9 +20,11 @@ const tempId = (extId: string): string => `temp-${extId}`;
 /** Title of SP's built-in Eisenhower tag. `ensureTags` reuses that tag by its
  * id (it may have been renamed), so starred tasks land in the existing quadrant. */
 export const IMPORTANT_TAG_TITLE = 'important';
+export const MICROSOFT_TODO_TAG_TITLE = 'microsoft-todo';
 
 export interface TaskFollowUp {
   tempId: string;
+  created?: number;
   dueDay?: string;
   /** resolved to tag IDs at run time (existing tags are reused by title) */
   tagTitles?: string[];
@@ -44,15 +50,20 @@ export interface ImportPlan {
 export interface PlanImportOptions {
   /** tag starred (importance `high`) tasks with SP's `important` tag */
   isTagImportant: boolean;
+  /** tag every imported root task with the Microsoft To Do source tag */
+  isTagMicrosoftTodo?: boolean;
+  /** include completed Microsoft To Do tasks; omitted by default */
+  includeCompletedTasks?: boolean;
   /** omit to import everything */
   selectedProjectExtIds?: ReadonlySet<string>;
 }
 
 export const groupTasksByProject = (
   model: MsTodoImportModel,
+  includeCompletedTasks = false,
 ): Map<string, MsTodoTask[]> => {
   const byProject = new Map<string, MsTodoTask[]>();
-  for (const t of model.tasks) {
+  for (const t of getTasksToImport(model.tasks, includeCompletedTasks)) {
     const list = byProject.get(t.projectExtId) || [];
     list.push(t);
     byProject.set(t.projectExtId, list);
@@ -60,12 +71,18 @@ export const groupTasksByProject = (
   return byProject;
 };
 
-const taskTagTitles = (task: MsTodoTask, isTagImportant: boolean): string[] => {
+const taskTagTitles = (
+  task: MsTodoTask,
+  isTagImportant: boolean,
+  isTagMicrosoftTodo: boolean,
+): string[] => {
   // SP sub-tasks cannot hold tags (host model) — the plugin must enforce this
   if (task.parentExtId) {
     return [];
   }
-  const titles = [...task.categories];
+  const titles = isTagMicrosoftTodo
+    ? [MICROSOFT_TODO_TAG_TITLE, ...task.categories]
+    : [...task.categories];
   if (isTagImportant && task.isImportant) {
     titles.push(IMPORTANT_TAG_TITLE);
   }
@@ -125,7 +142,10 @@ export const planImport = (
   const titles = buildProjectTitles(model);
   const tagTitles = new Set<string>();
   const projects: ProjectImportPlan[] = [];
-  const tasksByProject = groupTasksByProject(model);
+  const tasksByProject = groupTasksByProject(
+    model,
+    options.includeCompletedTasks ?? false,
+  );
 
   for (const project of model.projects) {
     if (
@@ -154,10 +174,17 @@ export const planImport = (
     const followUps: TaskFollowUp[] = [];
     for (const t of tasks) {
       const followUp: TaskFollowUp = { tempId: tempId(t.extId) };
+      if (t.created !== undefined) {
+        followUp.created = t.created;
+      }
       if (t.dueDay) {
         followUp.dueDay = t.dueDay;
       }
-      const titlesForTask = taskTagTitles(t, options.isTagImportant);
+      const titlesForTask = taskTagTitles(
+        t,
+        options.isTagImportant,
+        options.isTagMicrosoftTodo ?? false,
+      );
       if (titlesForTask.length) {
         followUp.tagTitles = titlesForTask;
         titlesForTask.forEach((title) => tagTitles.add(title));
@@ -165,7 +192,12 @@ export const planImport = (
       if (t.repeat) {
         followUp.repeat = t.repeat;
       }
-      if (followUp.dueDay || followUp.tagTitles || followUp.repeat) {
+      if (
+        followUp.created !== undefined ||
+        followUp.dueDay ||
+        followUp.tagTitles ||
+        followUp.repeat
+      ) {
         followUps.push(followUp);
       }
     }
