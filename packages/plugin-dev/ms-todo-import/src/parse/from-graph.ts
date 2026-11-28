@@ -12,6 +12,8 @@ interface RawChecklistItem {
   id?: string;
   displayName?: string;
   isChecked?: boolean;
+  createdDateTime?: string; // in UTC
+  checkedDateTime?: string | null; // in UTC
 }
 
 /** Microsoft Graph `todoTask` (fields used). */
@@ -21,6 +23,8 @@ export interface RawTask {
   status?: string;
   importance?: string;
   body?: { content?: string; contentType?: string } | null;
+  createdDateTime?: string; // in UTC
+  lastModifiedDateTime?: String; // in UTC
   dueDateTime?: { dateTime?: string; timeZone?: string } | null;
   recurrence?: RawRecurrence | null;
   categories?: string[];
@@ -163,7 +167,7 @@ const parseTask = (raw: RawTask, listId: string, strings: ParseStrings): MsTodoT
     parentExtId: null,
     title: title.value,
     notes: notes.value,
-    isDone: false,
+    isDone: raw.status === 'completed',
     categories: categories.map((c) => c.value),
     isImportant: raw.importance === 'high',
     dueDay,
@@ -205,7 +209,7 @@ const parseStep = (
 /**
  * Graph payload → normalized model. Pure; safe to unit-test with fixtures.
  *
- * - completed tasks are skipped (the request filters them too),
+ * - completed tasks are marked done; the import plan can omit them by default,
  * - steps become sub-tasks right after their task; checked steps stay done,
  * - lists without open tasks are kept, so the preview can show them as empty.
  */
@@ -217,7 +221,7 @@ export const parseGraphData = (
   const tasks: MsTodoTask[] = [];
   for (const project of projects) {
     for (const rawTask of raw.tasksByListId[project.extId] ?? []) {
-      if (!asStr(rawTask.id) || rawTask.status === 'completed') {
+      if (!asStr(rawTask.id)) {
         continue;
       }
       const task = parseTask(rawTask, project.extId, strings);
